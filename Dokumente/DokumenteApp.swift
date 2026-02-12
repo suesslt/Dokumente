@@ -1,10 +1,3 @@
-//
-//  DokumenteApp.swift
-//  Dokumente
-//
-//  Created by Thomas Süssli on 12.02.2026.
-//
-
 import SwiftUI
 import SwiftData
 
@@ -12,9 +5,14 @@ import SwiftData
 struct DokumenteApp: App {
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
-            Item.self,
+            PDFDocument.self,
+            Folder.self
         ])
-        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
+        let modelConfiguration = ModelConfiguration(
+            schema: schema,
+            isStoredInMemoryOnly: false,
+            cloudKitDatabase: .none // Using manual iCloud file sync instead
+        )
 
         do {
             return try ModelContainer(for: schema, configurations: [modelConfiguration])
@@ -29,4 +27,9 @@ struct DokumenteApp: App {
         }
         .modelContainer(sharedModelContainer)
     }
+}
+
+extension Notification.Name {
+    static let importPDF      = Notification.Name("importPDF")
+    static let deleteAllPDFs  = Notification.Name("deleteAllPDFs")
 }
