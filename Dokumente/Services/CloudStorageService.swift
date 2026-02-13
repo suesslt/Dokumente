@@ -262,8 +262,12 @@ actor CloudStorageService {
         // Download starten
         try FileManager.default.startDownloadingUbiquitousItem(at: cloudURL)
 
-        // Warten bis vollständig heruntergeladen (polling mit Timeout)
+        // Warten bis vollständig heruntergeladen (polling mit Timeout).
+        // Status wird nur bei Änderungen geloggt, um die Konsole nicht zu überfluten.
         let deadline = Date().addingTimeInterval(timeout)
+        var lastLoggedStatus: String? = nil
+        var pollCount = 0
+
         while Date() < deadline {
             let resourceValues = try cloudURL.resourceValues(forKeys: [
                 .ubiquitousItemDownloadingStatusKey,
@@ -271,12 +275,20 @@ actor CloudStorageService {
             ])
 
             let status = resourceValues.ubiquitousItemDownloadingStatus
-            print("⬇️ CloudStorageService: Download-Status '\(cloudPath)': \(String(describing: status?.rawValue))")
+            let statusRaw = status?.rawValue ?? "nil"
+            pollCount += 1
+
+            // Nur loggen wenn sich der Status geändert hat
+            if statusRaw != lastLoggedStatus {
+                let elapsed = String(format: "%.1f", timeout - deadline.timeIntervalSinceNow)
+                print("⬇️ CloudStorageService: Download-Status nach \(elapsed)s [\(pollCount) Polls]: '\(statusRaw)'")
+                lastLoggedStatus = statusRaw
+            }
 
             if status == .current {
                 // Vollständig heruntergeladen – in Cache kopieren
                 try? FileManager.default.copyItem(at: cloudURL, to: localURL)
-                print("✅ CloudStorageService: Download abgeschlossen und in Cache kopiert: '\(cloudPath)'")
+                print("✅ CloudStorageService: Download abgeschlossen nach \(pollCount) Polls: '\(cloudPath)'")
                 return localURL
             }
 
@@ -284,7 +296,7 @@ actor CloudStorageService {
             try await Task.sleep(for: .milliseconds(500))
         }
 
-        print("❌ CloudStorageService: Download Timeout für '\(cloudPath)' nach \(timeout)s")
+        print("❌ CloudStorageService: Download Timeout nach \(pollCount) Polls (\(timeout)s): '\(cloudPath)'")
         throw CloudStorageError.downloadTimeout
     }
 

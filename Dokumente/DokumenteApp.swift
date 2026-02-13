@@ -9,8 +9,10 @@ struct DokumenteApp: App {
             Folder.self
         ])
 
-        // Stufe 1: Versuche mit CloudKit-Sync.
+        // Stufe 1: Versuche mit CloudKit-Sync (nur auf echten Geräten).
+        // Im Simulator ist kein echtes iCloud-Konto verfügbar → CloudKit überspringen.
         // Voraussetzung: Alle Modell-Attribute müssen einen Default-Wert haben (CloudKit-Anforderung).
+        #if !targetEnvironment(simulator)
         let cloudConfig = ModelConfiguration(
             schema: schema,
             isStoredInMemoryOnly: false,
@@ -20,11 +22,16 @@ struct DokumenteApp: App {
             print("✅ DokumenteApp: SwiftData mit CloudKit-Sync gestartet")
             return container
         }
+        #endif
 
-        // Stufe 2: CloudKit-Sync fehlgeschlagen.
+        // Stufe 2: CloudKit-Sync fehlgeschlagen (oder Simulator).
         // Versuche lokale Datenbank ohne Sync, aber mit Migration der bestehenden Daten.
+        #if targetEnvironment(simulator)
+        print("ℹ️ DokumenteApp: Simulator erkannt – starte ohne iCloud-Sync (lokale Datenbank).")
+        #else
         print("⚠️ DokumenteApp: CloudKit nicht verfügbar, starte ohne iCloud-Sync.")
         print("   Mögliche Ursachen: Fehlende Entitlements, kein iCloud-Account, falscher Container")
+        #endif
         let localConfig = ModelConfiguration(
             schema: schema,
             isStoredInMemoryOnly: false,

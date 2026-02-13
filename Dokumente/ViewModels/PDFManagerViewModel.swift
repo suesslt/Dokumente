@@ -17,6 +17,9 @@ final class PDFManagerViewModel: ObservableObject {
     /// Zeigt den Fortschritt beim Wiederherstellen des iCloud-Caches an.
     @Published var isSyncingFromCloud = false
 
+    /// Verhindert parallele `restoreCacheIfNeeded()`-Aufrufe (z.B. durch mehrere CloudKit-Events).
+    private var isRestoringCache = false
+
     private let cloudStorage = CloudStorageService.shared
     private let textExtractor = PDFTextExtractor.shared
     private let claudeAPI = ClaudeAPIService.shared
@@ -107,6 +110,14 @@ final class PDFManagerViewModel: ObservableObject {
     ///
     /// Wird sowohl beim App-Start als auch nach jedem CloudKit-Import-Event aufgerufen.
     func restoreCacheIfNeeded() async {
+        // Parallele Aufrufe verhindern (z.B. durch mehrere CloudKit-Import-Events)
+        guard !isRestoringCache else {
+            print("ℹ️ PDFManagerViewModel: restoreCacheIfNeeded() – bereits aktiv, überspringe doppelten Aufruf")
+            return
+        }
+        isRestoringCache = true
+        defer { isRestoringCache = false }
+
         // Dokumente neu laden, damit auch frisch synchronisierte erfasst werden
         loadDocuments()
 
@@ -126,7 +137,6 @@ final class PDFManagerViewModel: ObservableObject {
         }
 
         print("🔄 PDFManagerViewModel: \(missingDocs.count) von \(documents.count) Datei(en) fehlen im Cache — starte Wiederherstellung")
-
         isSyncingFromCloud = true
         await cloudStorage.restoreCacheFromICloud(cloudPaths: missingDocs.map(\.cloudPath))
 
@@ -143,6 +153,35 @@ final class PDFManagerViewModel: ObservableObject {
         loadDocuments()
 
         isSyncingFromCloud = false
+    }
+
+    // MARK: - Thumbnail-Generierung
+
+    /// Rendert die erste Seite des PDFs als JPEG-Thumbnail.
+    ///
+    /// - Parameter url: Lokale URL der PDF-Datei
+    /// - Returns: JPEG-komprimierte Bilddaten, oder `nil` bei Fehler
+    private func generateThumbnail(from url: URL) -> Data? {
+        guard let pdf = PDFKit.PDFDocument(url: url),
+              let page = pdf.page(at: 0) else { return nil }
+
+        let pageRect = page.bounds(for: .mediaBox)
+        let scale: CGFloat = 300 / max(pageRect.width, pageRect.height)
+        let targetSize = CGSize(
+            width:  pageRect.width  * scale,
+            height: pageRect.height * scale
+        )
+
+        let renderer = UIGraphicsImageRenderer(size: targetSize)
+        let image = renderer.image { ctx in
+            UIColor.white.setFill()
+            ctx.fill(CGRect(origin: .zero, size: targetSize))
+            ctx.cgContext.translateBy(x: 0, y: targetSize.height)
+            ctx.cgContext.scaleBy(x: scale, y: -scale)
+            page.draw(with: .mediaBox, to: ctx.cgContext)
+        }
+
+        return image.jpegData(compressionQuality: 0.7)
     }
 
     // MARK: - Duplikat-Erkennung
@@ -206,6 +245,13 @@ final class PDFManagerViewModel: ObservableObject {
 
             let pageCount = textExtractor.getPageCount(from: URL(fileURLWithPath: localPath)) ?? 0
 
+            let thumbnailData = generateThumbnail(from: URL(fileURLWithPath: localPath))
+            if thumbnailData != nil {
+                print("🖼️ PDFManagerViewModel: Thumbnail generiert für '\(url.lastPathComponent)'")
+            } else {
+                print("⚠️ PDFManagerViewModel: Thumbnail-Generierung fehlgeschlagen für '\(url.lastPathComponent)'")
+            }
+
             let document = PDFDocument(
                 fileName: url.lastPathComponent,
                 cloudPath: cloudPath,
@@ -213,6 +259,7 @@ final class PDFManagerViewModel: ObservableObject {
                 summaryStatus: .pending,
                 pageCount: pageCount,
                 fileSize: fileSize,
+                thumbnailData: thumbnailData,
                 contentHash: hash,
                 folder: folder
             )

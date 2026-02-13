@@ -54,6 +54,11 @@ final class PDFDocument {
     /// Anzahl der Seiten im PDF
     var pageCount: Int = 0
 
+    /// JPEG-Thumbnail der ersten Seite (extern gespeichert, nicht in der SQLite-Zeile).
+    /// Wird einmalig beim Import generiert und via CloudKit auf alle Geräte synchronisiert.
+    @Attribute(.externalStorage)
+    var thumbnailData: Data?
+
     // MARK: - KI-generierte Metadaten
 
     /// Von KI extrahierter oder manuell bearbeiteter Titel
@@ -131,6 +136,7 @@ final class PDFDocument {
         self.pageCount = pageCount
         self.fileSize = fileSize
         self.contentHash = contentHash
+        self.thumbnailData = thumbnailData
         self.dateCreated = dateCreated
         self.keywords = keywords
         self.lastPageIndex = lastPageIndex

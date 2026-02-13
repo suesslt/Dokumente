@@ -1,5 +1,6 @@
 import SwiftUI
 import PDFKit
+import SwiftData
 
 /// View 3: Zeigt ein PDF mit optionalen Zusatzinformationen an
 struct PDFDetailView: View {
@@ -15,8 +16,14 @@ struct PDFDetailView: View {
         ZStack {
             // PDF anzeigen
             if let url = localURL {
-                PDFKitView(url: url, document: document)
-                    .ignoresSafeArea()
+                PDFKitView(
+                    url: url,
+                    lastPageIndex: document.lastPageIndex
+                ) { pageIndex in
+                    document.lastPageIndex = pageIndex
+                    try? viewModel.modelContext?.save()
+                }
+                .ignoresSafeArea()
             } else if isLoadingFile {
                 ProgressView("PDF wird geladen…")
             } else {
@@ -59,44 +66,77 @@ struct PDFDetailView: View {
 
 private struct PDFKitView: UIViewRepresentable {
     let url: URL
-    let document: PDFDocument
-    
+    let lastPageIndex: Int?
+    let onPageChanged: (Int) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onPageChanged: onPageChanged)
+    }
+
     func makeUIView(context: Context) -> PDFView {
         let pdfView = PDFView()
-        
         pdfView.autoScales = true
         pdfView.displayMode = .singlePageContinuous
         pdfView.displayDirection = .vertical
-        
-        // PDF laden
+
         if let pdfDocument = PDFKit.PDFDocument(url: url) {
             pdfView.document = pdfDocument
-            
+
             // Letzte Seite wiederherstellen
-            if let lastPage = document.lastPageIndex,
+            if let lastPage = lastPageIndex,
                lastPage < pdfDocument.pageCount,
                let page = pdfDocument.page(at: lastPage) {
                 pdfView.go(to: page)
             }
         }
-        
-        // Benachrichtigungen für Seitenwechsel
-        NotificationCenter.default.addObserver(
-            forName: .PDFViewPageChanged,
-            object: pdfView,
-            queue: .main
-        ) { _ in
-            if let currentPage = pdfView.currentPage,
-               let pageIndex = pdfView.document?.index(for: currentPage) {
-                document.lastPageIndex = pageIndex
-            }
-        }
-        
+
+        // Observer im Coordinator halten, damit er sauber entfernt werden kann
+        context.coordinator.observe(pdfView)
+
         return pdfView
     }
-    
+
     func updateUIView(_ pdfView: PDFView, context: Context) {
-        // Updates werden automatisch von PDFKit gehandhabt
+        // Neues Dokument laden falls sich die URL geändert hat
+        if pdfView.document?.documentURL != url,
+           let pdfDocument = PDFKit.PDFDocument(url: url) {
+            pdfView.document = pdfDocument
+            if let lastPage = lastPageIndex,
+               lastPage < pdfDocument.pageCount,
+               let page = pdfDocument.page(at: lastPage) {
+                pdfView.go(to: page)
+            }
+        }
+    }
+
+    // MARK: - Coordinator
+
+    final class Coordinator: NSObject {
+        private let onPageChanged: (Int) -> Void
+        private var observer: NSObjectProtocol?
+
+        init(onPageChanged: @escaping (Int) -> Void) {
+            self.onPageChanged = onPageChanged
+        }
+
+        func observe(_ pdfView: PDFView) {
+            observer = NotificationCenter.default.addObserver(
+                forName: .PDFViewPageChanged,
+                object: pdfView,
+                queue: .main
+            ) { [weak pdfView, weak self] _ in
+                guard let pdfView,
+                      let currentPage = pdfView.currentPage,
+                      let pageIndex = pdfView.document?.index(for: currentPage) else { return }
+                self?.onPageChanged(pageIndex)
+            }
+        }
+
+        deinit {
+            if let observer {
+                NotificationCenter.default.removeObserver(observer)
+            }
+        }
     }
 }
 
