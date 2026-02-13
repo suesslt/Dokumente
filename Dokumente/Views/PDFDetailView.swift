@@ -41,8 +41,9 @@ struct PDFDetailView: View {
         }
         .navigationTitle(document.title ?? document.fileName)
         .navigationBarTitleDisplayMode(.inline)
-        .task {
-            // Datei zuerst aus lokalem Cache laden, sonst von iCloud herunterladen
+        .task(id: document.id) {
+            // Wird bei jedem Dokumentwechsel neu ausgelöst
+            localURL = nil
             isLoadingFile = true
             localURL = viewModel.getLocalURL(for: document)
             if localURL == nil {
