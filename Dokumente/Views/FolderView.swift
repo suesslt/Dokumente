@@ -36,7 +36,7 @@ struct FolderView: View {
     // Berechne Anzahl PDFs pro Ordner
     private func documentCount(for folder: Folder?) -> Int {
         if let folder = folder {
-            return folder.documents.count
+            return folder.documents?.count ?? 0
         } else {
             // "Alle PDFs" = alle Dokumente ohne Ordner
             return viewModel.documents.filter { $0.folder == nil }.count
@@ -232,7 +232,7 @@ struct FolderView: View {
     
     private func deleteFolder(_ folder: Folder) {
         // Verschiebe alle PDFs aus diesem Ordner zu "Alle PDFs"
-        for document in folder.documents {
+        for document in folder.documents ?? [] {
             document.folder = nil
         }
         

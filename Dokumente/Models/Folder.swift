@@ -7,33 +7,38 @@ import SwiftData
 /// - PDFs enthalten
 /// - Unterordner enthalten (hierarchische Struktur)
 /// - Umbenannt, verschoben und gelöscht werden
+///
+/// CloudKit-Anforderung: Alle nicht-optionalen Felder müssen einen `@Attribute(.default)`
+/// besitzen, damit CoreData/CloudKit das Schema akzeptiert.
 @Model
 final class Folder: Hashable {
     // MARK: - Identifikation
-    
-    var id: UUID
-    var name: String
-    
+
+    @Attribute(.preserveValueOnDeletion)
+    var id: UUID = UUID()
+
+    var name: String = ""
+
     // MARK: - Hierarchie
-    
+
     /// Parent-Ordner (nil = Root-Ebene)
     var parent: Folder?
-    
-    /// Unterordner
+
+    /// Unterordner — CloudKit: Array-Relationships müssen optional sein.
     @Relationship(deleteRule: .cascade, inverse: \Folder.parent)
-    var subfolders: [Folder]
-    
-    /// PDFs in diesem Ordner
+    var subfolders: [Folder]?
+
+    /// PDFs in diesem Ordner — CloudKit: Array-Relationships müssen optional sein.
     @Relationship(deleteRule: .nullify, inverse: \PDFDocument.folder)
-    var documents: [PDFDocument]
-    
+    var documents: [PDFDocument]?
+
     // MARK: - Metadaten
-    
+
     /// Erstellungsdatum
-    var createdDate: Date
-    
+    var createdDate: Date = Date()
+
     /// Sortierreihenfolge (für manuelle Sortierung)
-    var sortOrder: Int
+    var sortOrder: Int = 0
     
     // MARK: - Computed Properties
     
@@ -76,12 +81,11 @@ final class Folder: Hashable {
         self.id = id
         self.name = name
         self.parent = parent
-        self.subfolders = []
-        self.documents = []
+        self.subfolders = nil
+        self.documents = nil
         self.createdDate = createdDate
         self.sortOrder = sortOrder
     }
-    
     // MARK: - Hashable Conformance
     
     static func == (lhs: Folder, rhs: Folder) -> Bool {

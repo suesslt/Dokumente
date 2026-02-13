@@ -57,11 +57,17 @@ struct ContentView: View {
         .overlay {
             if viewModel.isImporting {
                 ImportingOverlay()
+            } else if viewModel.isSyncingFromCloud {
+                SyncingOverlay()
             }
         }
         .onAppear {
             viewModel.modelContext = modelContext
             viewModel.loadDocuments()
+            // Stellt fehlende PDF-Dateien aus iCloud wieder her (z.B. nach Neuinstallation)
+            Task {
+                await viewModel.restoreCacheIfNeeded()
+            }
         }
         .onReceive(viewModel.$errorMessage) { message in
             if let message = message {
@@ -99,6 +105,29 @@ private struct ImportingOverlay: View {
                     .controlSize(.large)
                 Text("PDF wird importiert...")
                     .font(.headline)
+            }
+            .padding(32)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        }
+    }
+}
+
+// MARK: - Syncing Overlay
+
+private struct SyncingOverlay: View {
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.3)
+                .ignoresSafeArea()
+
+            VStack(spacing: 16) {
+                ProgressView()
+                    .controlSize(.large)
+                Text("PDFs werden aus iCloud geladen…")
+                    .font(.headline)
+                Text("Bitte warte kurz.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
             }
             .padding(32)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))

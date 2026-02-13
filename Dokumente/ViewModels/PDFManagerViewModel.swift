@@ -4,6 +4,7 @@ import Combine
 import PDFKit
 import UIKit
 import CommonCrypto
+import CoreData
 
 @MainActor
 final class PDFManagerViewModel: ObservableObject {
@@ -13,26 +14,76 @@ final class PDFManagerViewModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var showError = false
 
+    /// Zeigt den Fortschritt beim Wiederherstellen des iCloud-Caches an.
+    @Published var isSyncingFromCloud = false
+
     private let cloudStorage = CloudStorageService.shared
     private let textExtractor = PDFTextExtractor.shared
     private let claudeAPI = ClaudeAPIService.shared
 
-    var modelContext: ModelContext?
-
-    init() {
-        setupStorage()
+    var modelContext: ModelContext? {
+        didSet { subscribeToCloudKitSync() }
     }
 
-    private func setupStorage() {
+    /// Speichert die NotificationCenter-Subscription für CloudKit-Import-Events.
+    private var cloudKitSyncObserver: AnyCancellable?
+
+    init() {
+        Task {
+            await setupStorage()
+        }
+    }
+
+    private func setupStorage() async {
         do {
-            try cloudStorage.setupDirectories()
+            try await cloudStorage.setupDirectories()
         } catch {
             showError(message: "Fehler beim Einrichten des Speichers: \(error.localizedDescription)")
         }
     }
 
+    // MARK: - CloudKit-Sync-Listener
+
+    /// Abonniert die `NSPersistentCloudKitContainer`-Benachrichtigung, die gefeuert wird,
+    /// sobald CloudKit neue Daten auf dieses Gerät importiert hat.
+    ///
+    /// Damit werden neu synchronisierte Dokumente (z. B. auf Gerät B nach Import auf Gerät A)
+    /// sofort in der UI sichtbar und fehlende PDF-Dateien automatisch heruntergeladen.
+    private func subscribeToCloudKitSync() {
+        guard cloudKitSyncObserver == nil else { return }
+
+        cloudKitSyncObserver = NotificationCenter.default
+            .publisher(for: NSPersistentCloudKitContainer.eventChangedNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                guard let self else { return }
+                guard let event = notification.userInfo?[NSPersistentCloudKitContainer.eventNotificationUserInfoKey]
+                        as? NSPersistentCloudKitContainer.Event else { return }
+
+                // Nur auf abgeschlossene Import-Events reagieren (nicht auf Export oder Setup)
+                guard event.type == .import, event.endDate != nil else { return }
+
+                if let error = event.error {
+                    print("⚠️ CloudKit-Sync: Import-Event mit Fehler: \(error)")
+                    return
+                }
+
+                print("☁️ CloudKit-Sync: Import-Event abgeschlossen — lade Dokumente neu")
+                self.loadDocuments()
+
+                Task {
+                    await self.restoreCacheIfNeeded()
+                }
+            }
+    }
+
+    // MARK: - Dokumente laden
+
     func loadDocuments() {
-        guard let context = modelContext else { return }
+        guard let context = modelContext else {
+            print("⚠️ PDFManagerViewModel: loadDocuments() – kein ModelContext gesetzt")
+            return
+        }
 
         let descriptor = FetchDescriptor<PDFDocument>(
             sortBy: [SortDescriptor(\.importDate, order: .reverse)]
@@ -40,9 +91,58 @@ final class PDFManagerViewModel: ObservableObject {
 
         do {
             documents = try context.fetch(descriptor)
+            print("📋 PDFManagerViewModel: \(documents.count) Dokument(e) geladen")
         } catch {
             showError(message: "Fehler beim Laden der Dokumente: \(error.localizedDescription)")
         }
+    }
+
+    // MARK: - iCloud-Cache-Wiederherstellung
+
+    /// Stellt den lokalen Cache nach einer Neuinstallation oder einem CloudKit-Sync wieder her.
+    ///
+    /// SwiftData + CloudKit synchronisiert die Metadaten automatisch auf neue Geräte.
+    /// Die PDF-Binärdaten müssen aber separat von iCloud Drive heruntergeladen werden.
+    /// Diese Methode überprüft alle bekannten Dokumente und lädt fehlende Dateien herunter.
+    ///
+    /// Wird sowohl beim App-Start als auch nach jedem CloudKit-Import-Event aufgerufen.
+    func restoreCacheIfNeeded() async {
+        // Dokumente neu laden, damit auch frisch synchronisierte erfasst werden
+        loadDocuments()
+
+        guard !documents.isEmpty else {
+            print("ℹ️ PDFManagerViewModel: restoreCacheIfNeeded() – keine Dokumente vorhanden")
+            return
+        }
+
+        let missingDocs = documents.filter { doc in
+            guard let localPath = doc.localCachePath else { return true }
+            return !FileManager.default.fileExists(atPath: localPath)
+        }
+
+        guard !missingDocs.isEmpty else {
+            print("✅ PDFManagerViewModel: restoreCacheIfNeeded() – alle \(documents.count) Datei(en) im Cache vorhanden")
+            return
+        }
+
+        print("🔄 PDFManagerViewModel: \(missingDocs.count) von \(documents.count) Datei(en) fehlen im Cache — starte Wiederherstellung")
+
+        isSyncingFromCloud = true
+        await cloudStorage.restoreCacheFromICloud(cloudPaths: missingDocs.map(\.cloudPath))
+
+        // Lokale Pfade in der Datenbank aktualisieren
+        for document in missingDocs {
+            if let restoredURL = await cloudStorage.getLocalURL(for: document.cloudPath) {
+                document.localCachePath = restoredURL.path
+                print("✅ PDFManagerViewModel: Lokaler Pfad aktualisiert für '\(document.fileName)'")
+            } else {
+                print("⚠️ PDFManagerViewModel: Kein lokaler Pfad gefunden für '\(document.fileName)'")
+            }
+        }
+        try? modelContext?.save()
+        loadDocuments()
+
+        isSyncingFromCloud = false
     }
 
     // MARK: - Duplikat-Erkennung
@@ -81,17 +181,18 @@ final class PDFManagerViewModel: ObservableObject {
         return try context.fetch(descriptor).first
     }
 
+    // MARK: - PDF importieren
+
     func importPDF(from url: URL, toFolder folder: Folder? = nil) async {
         isImporting = true
 
         do {
-            // Start accessing security-scoped resource
             guard url.startAccessingSecurityScopedResource() else {
                 throw CloudStorageError.fileOperationFailed("Keine Berechtigung für Dateizugriff")
             }
             defer { url.stopAccessingSecurityScopedResource() }
 
-            // --- Duplikat-Prüfung (vor dem Kopieren) ---
+            // Duplikat-Prüfung vor dem Kopieren
             let hash = try computeSHA256(for: url)
             if let existing = try findDuplicate(hash: hash) {
                 let name = existing.title ?? existing.fileName
@@ -100,13 +201,11 @@ final class PDFManagerViewModel: ObservableObject {
                 return
             }
 
-            // Import file to cloud storage
+            // Datei in iCloud Drive und lokalem Cache speichern
             let (cloudPath, localPath, fileSize) = try await cloudStorage.importPDF(from: url)
 
-            // Extract page count
             let pageCount = textExtractor.getPageCount(from: URL(fileURLWithPath: localPath)) ?? 0
 
-            // Create document model with folder assignment
             let document = PDFDocument(
                 fileName: url.lastPathComponent,
                 cloudPath: cloudPath,
@@ -118,14 +217,11 @@ final class PDFManagerViewModel: ObservableObject {
                 folder: folder
             )
 
-            // Save to SwiftData
             modelContext?.insert(document)
             try modelContext?.save()
 
-            // Reload documents
             loadDocuments()
 
-            // Start summary generation in background
             Task {
                 await generateSummary(for: document)
             }
@@ -137,11 +233,26 @@ final class PDFManagerViewModel: ObservableObject {
         isImporting = false
     }
 
+    // MARK: - KI-Zusammenfassung
+
     func generateSummary(for document: PDFDocument) async {
-        guard let localPath = document.localCachePath ?? cloudStorage.getLocalURL(for: document.cloudPath)?.path else {
-            document.summaryStatus = .failed
-            try? modelContext?.save()
-            return
+        // Falls lokale Datei nicht vorhanden, zuerst von iCloud herunterladen
+        let localPath: String
+        if let cachedPath = document.localCachePath,
+           FileManager.default.fileExists(atPath: cachedPath) {
+            localPath = cachedPath
+        } else {
+            do {
+                let downloadedURL = try await cloudStorage.downloadFromICloud(cloudPath: document.cloudPath)
+                document.localCachePath = downloadedURL.path
+                try? modelContext?.save()
+                localPath = downloadedURL.path
+            } catch {
+                document.summaryStatus = .failed
+                document.summary = "Datei konnte nicht von iCloud geladen werden: \(error.localizedDescription)"
+                try? modelContext?.save()
+                return
+            }
         }
 
         document.summaryStatus = .processing
@@ -149,10 +260,7 @@ final class PDFManagerViewModel: ObservableObject {
         loadDocuments()
 
         do {
-            // Extract text from PDF
             let result = try textExtractor.extractText(from: URL(fileURLWithPath: localPath))
-
-            // Einzelner Claude-Aufruf: Summary, Author und Title gleichzeitig
             let metadata = try await claudeAPI.extractDocumentMetadata(from: result.text)
 
             document.summary = metadata.summary
@@ -183,32 +291,54 @@ final class PDFManagerViewModel: ObservableObject {
         }
     }
 
+    // MARK: - PDF löschen
+
     func deleteDocument(_ document: PDFDocument) {
-        do {
-            // Thumbnail aus dem Cache entfernen, falls vorhanden
+        Task {
             if let localPath = document.localCachePath {
-                Task { await PDFThumbnailCache.shared.evict(for: URL(fileURLWithPath: localPath)) }
+                await PDFThumbnailCache.shared.evict(for: URL(fileURLWithPath: localPath))
             }
-
-            try cloudStorage.deletePDF(cloudPath: document.cloudPath)
-            modelContext?.delete(document)
-            try modelContext?.save()
-            loadDocuments()
-
-            if selectedDocument?.id == document.id {
-                selectedDocument = nil
+            do {
+                try await cloudStorage.deletePDF(cloudPath: document.cloudPath)
+                modelContext?.delete(document)
+                try modelContext?.save()
+                loadDocuments()
+                if selectedDocument?.id == document.id {
+                    selectedDocument = nil
+                }
+            } catch {
+                showError(message: "Löschen fehlgeschlagen: \(error.localizedDescription)")
             }
-        } catch {
-            showError(message: "Löschen fehlgeschlagen: \(error.localizedDescription)")
         }
     }
 
+    // MARK: - Lokale URL ermitteln
+
+    /// Gibt die lokale URL eines Dokuments zurück, falls sie im Cache vorhanden ist.
     func getLocalURL(for document: PDFDocument) -> URL? {
-        if let localPath = document.localCachePath {
+        if let localPath = document.localCachePath,
+           FileManager.default.fileExists(atPath: localPath) {
             return URL(fileURLWithPath: localPath)
         }
-        return cloudStorage.getLocalURL(for: document.cloudPath)
+        // Kein synchroner Fallback mehr möglich da actor — für sofortigen Zugriff
+        // nur den lokalen Cache nutzen; für iCloud-Download `getLocalURLDownloading` verwenden.
+        return nil
     }
+
+    /// Asynchrone Variante: Wartet auf den vollständigen iCloud-Download.
+    func getLocalURLDownloading(for document: PDFDocument) async throws -> URL {
+        if let localPath = document.localCachePath,
+           FileManager.default.fileExists(atPath: localPath) {
+            return URL(fileURLWithPath: localPath)
+        }
+
+        let url = try await cloudStorage.downloadFromICloud(cloudPath: document.cloudPath)
+        document.localCachePath = url.path
+        try? modelContext?.save()
+        return url
+    }
+
+    // MARK: - Hilfsmethoden
 
     private func showError(message: String) {
         errorMessage = message

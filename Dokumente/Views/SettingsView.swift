@@ -8,6 +8,10 @@ struct SettingsView: View {
     @State private var showSaveConfirmation = false
     @State private var errorMessage: String?
 
+    // iCloud-Status wird asynchron geprüft, damit der Main Thread nicht blockiert wird
+    private enum ICloudStatus { case checking, available, unavailable }
+    @State private var iCloudStatus: ICloudStatus = .checking
+
     private let keychainService = KeychainService.shared
 
     var body: some View {
@@ -103,15 +107,25 @@ struct SettingsView: View {
                         
                         Spacer()
                         
-                        if CloudStorageService.shared.isICloudAvailable {
+                        switch iCloudStatus {
+                        case .checking:
+                            ProgressView()
+                                .controlSize(.small)
+                        case .available:
                             Label("Verbunden", systemImage: "checkmark.circle.fill")
                                 .foregroundStyle(.green)
                                 .font(.subheadline)
-                        } else {
+                        case .unavailable:
                             Label("Nicht verfügbar", systemImage: "xmark.circle.fill")
                                 .foregroundStyle(.red)
                                 .font(.subheadline)
                         }
+                    }
+                    
+                    if iCloudStatus == .unavailable {
+                        Text("Bitte melde dich unter Einstellungen → \(UIDevice.current.name.isEmpty ? "Apple ID" : "Apple-ID") → iCloud bei iCloud an und aktiviere iCloud Drive.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 }
             }
@@ -126,6 +140,11 @@ struct SettingsView: View {
             }
             .onAppear {
                 loadAPIKey()
+            }
+            .task {
+                // iCloud-Status asynchron auf Background-Thread prüfen
+                let available = await CloudStorageService.shared.resolveICloudContainer()
+                iCloudStatus = available ? .available : .unavailable
             }
         }
     }

@@ -52,7 +52,7 @@ private struct FolderMenuItem: View {
     let modelContext: ModelContext
     
     var body: some View {
-        if folder.subfolders.isEmpty {
+        if (folder.subfolders ?? []).isEmpty {
             // Leaf-Ordner - einfacher Button
             Button {
                 moveDocument()
@@ -78,7 +78,7 @@ private struct FolderMenuItem: View {
                 Divider()
                 
                 // Unterordner
-                ForEach(folder.subfolders.sorted(by: { $0.sortOrder < $1.sortOrder }), id: \.id) { subfolder in
+                ForEach((folder.subfolders ?? []).sorted(by: { $0.sortOrder < $1.sortOrder }), id: \.id) { subfolder in
                     FolderMenuItem(
                         folder: subfolder,
                         document: document,

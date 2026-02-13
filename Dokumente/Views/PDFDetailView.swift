@@ -8,13 +8,17 @@ struct PDFDetailView: View {
     
     @State private var showInfo = false
     @State private var pdfDocument: PDFDocument?
-    
+    @State private var localURL: URL?
+    @State private var isLoadingFile = false
+
     var body: some View {
         ZStack {
             // PDF anzeigen
-            if let url = viewModel.getLocalURL(for: document) {
+            if let url = localURL {
                 PDFKitView(url: url, document: document)
                     .ignoresSafeArea()
+            } else if isLoadingFile {
+                ProgressView("PDF wird geladen…")
             } else {
                 ContentUnavailableView {
                     Label("PDF nicht verfügbar", systemImage: "exclamationmark.triangle")
@@ -30,6 +34,15 @@ struct PDFDetailView: View {
         }
         .navigationTitle(document.title ?? document.fileName)
         .navigationBarTitleDisplayMode(.inline)
+        .task {
+            // Datei zuerst aus lokalem Cache laden, sonst von iCloud herunterladen
+            isLoadingFile = true
+            localURL = viewModel.getLocalURL(for: document)
+            if localURL == nil {
+                localURL = try? await viewModel.getLocalURLDownloading(for: document)
+            }
+            isLoadingFile = false
+        }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {

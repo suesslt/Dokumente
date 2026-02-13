@@ -18,74 +18,82 @@ enum SummaryStatus: String, Codable {
 /// - Dateisystem-Informationen (Name, Pfad, Größe)
 /// - KI-generierte Metadaten (Titel, Autor, Zusammenfassung, Keywords)
 /// - Leseposition (zuletzt angezeigte Seite)
+///
+/// CloudKit-Anforderung: Alle nicht-optionalen Felder müssen einen `@Attribute(.default)`
+/// besitzen, damit CoreData/CloudKit das Schema akzeptiert.
 @Model
 final class PDFDocument {
     // MARK: - Identifikation
-    
-    var id: UUID
-    var fileName: String
-    
+
+    /// CloudKit erfordert einen Default-Wert für alle nicht-optionalen Attribute.
+    @Attribute(.preserveValueOnDeletion)
+    var id: UUID = UUID()
+
+    @Attribute(.preserveValueOnDeletion)
+    var fileName: String = ""
+
     // MARK: - Dateisystem
-    
+
     /// Pfad in iCloud Drive
-    var cloudPath: String
-    
+    var cloudPath: String = ""
+
     /// Pfad im lokalen Cache (falls vorhanden)
     var localCachePath: String?
-    
+
     /// Zeitpunkt des Imports
-    var importDate: Date
-    
+    var importDate: Date = Date()
+
     /// Dateigröße in Bytes
-    var fileSize: Int64
-    
+    var fileSize: Int64 = 0
+
     /// SHA-256 Hash des Dateiinhalts für Duplikat-Erkennung
     var contentHash: String?
-    
+
     // MARK: - PDF-Eigenschaften
-    
+
     /// Anzahl der Seiten im PDF
-    var pageCount: Int
-    
+    var pageCount: Int = 0
+
     // MARK: - KI-generierte Metadaten
-    
+
     /// Von KI extrahierter oder manuell bearbeiteter Titel
     var title: String?
-    
+
     /// Von KI generierte Zusammenfassung des Inhalts
     var summary: String?
-    
+
     /// Von KI extrahierter Autor
     var author: String?
-    
+
     /// Von KI extrahierte Schlüsselwörter (Semikolon-getrennt)
     var keywords: String?
-    
+
     /// Erstellungsdatum des Dokuments im Format YYYYMMDD (falls von KI erkannt)
     var dateCreated: String?
-    
+
     /// Raw-Wert des SummaryStatus (für SwiftData-Kompatibilität)
-    var summaryStatusRaw: String
-    
+    /// Default "pending" entspricht SummaryStatus.pending
+    var summaryStatusRaw: String = SummaryStatus.pending.rawValue
+
     /// Status der Zusammenfassungs-Generierung
     var summaryStatus: SummaryStatus {
         get { SummaryStatus(rawValue: summaryStatusRaw) ?? .pending }
         set { summaryStatusRaw = newValue.rawValue }
     }
-    
+
     // MARK: - Leseposition-Persistenz
-    
+
     /// Zuletzt angezeigte Seite (0-basiert)
     /// Wird automatisch gespeichert beim Blättern und beim App-Neustart wiederhergestellt
     var lastPageIndex: Int?
-    
+
     /// Reserviert für zukünftige Verwendung (derzeit nicht genutzt)
     /// Ursprünglich für vertikale Scroll-Position gedacht, wurde aber entfernt,
     /// da es zu unerwarteten Sprüngen zur letzten Seite führte
     var lastScrollPosition: Double?
-    
+
     // MARK: - Ordner-Zugehörigkeit
-    
+
     /// Ordner, in dem sich dieses PDF befindet (nil = Root-Ebene / "Alle PDFs")
     var folder: Folder?
     
@@ -159,17 +167,16 @@ extension PDFDocumentTransferPayload: Transferable {
     }
 }
 
-extension PDFDocument: Transferable {
-    static var transferRepresentation: some TransferRepresentation {
-        ProxyRepresentation { (model: PDFDocument) -> PDFDocumentTransferPayload in
-            // Use UUID instead of persistentModelID to avoid main actor isolation
-            // The model itself is not Sendable, but we extract the UUID which is
-            PDFDocumentTransferPayload(documentID: model.id)
-        }
-    }
-    
+extension PDFDocument {
     /// Custom UTType für PDF Document Models
     static let pdfDocumentType = UTType(exportedAs: "com.scrinium.pdfdocument")
+
+    /// Creates a transferable payload from this document for use in Drag & Drop.
+    /// Use this instead of making PDFDocument itself Transferable, because
+    /// PersistentModels are not Sendable and cannot cross isolation boundaries.
+    func transferPayload() -> PDFDocumentTransferPayload {
+        PDFDocumentTransferPayload(documentID: self.id)
+    }
 }
 
 extension UTType {
