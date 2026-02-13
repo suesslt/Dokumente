@@ -2,11 +2,16 @@ import SwiftUI
 import SwiftData
 import UniformTypeIdentifiers
 
-/// View 2: Zeigt alle PDFs in einem Ordner (oder "Alle PDFs")
+/// View 2: Zeigt alle PDFs in einem Ordner (oder "Alle PDFs").
+/// Die Dokumentauswahl wird über ein Binding nach oben propagiert,
+/// damit die Detail-Spalte im NavigationSplitView aktualisiert wird.
 struct PDFListView: View {
     @ObservedObject var viewModel: PDFManagerViewModel
     let folder: Folder?
-    
+
+    /// Binding auf das aktuell geöffnete Dokument (Detail-Spalte).
+    @Binding var selectedDocument: PDFDocument?
+
     @State private var searchText = ""
     @State private var showFileImporter = false
     
@@ -63,15 +68,18 @@ struct PDFListView: View {
     }
     
     // MARK: - Document List
-    
+
     private var documentList: some View {
         List {
             ForEach(filteredDocuments) { document in
-                NavigationLink {
-                    PDFDetailView(document: document, viewModel: viewModel)
+                Button {
+                    selectedDocument = document
                 } label: {
                     DocumentRow(document: document)
                 }
+                .listRowBackground(
+                    selectedDocument?.id == document.id ? Color.accentColor.opacity(0.15) : Color.clear
+                )
                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                     Button(role: .destructive) {
                         viewModel.deleteDocument(document)
@@ -82,6 +90,7 @@ struct PDFListView: View {
             }
         }
         .listStyle(.insetGrouped)
+        .buttonStyle(.plain)
     }
     
     // MARK: - Empty State
@@ -210,7 +219,11 @@ private struct DocumentThumbnail: View {
 
 #Preview {
     NavigationStack {
-        PDFListView(viewModel: PDFManagerViewModel(), folder: nil)
+        PDFListView(
+            viewModel: PDFManagerViewModel(),
+            folder: nil,
+            selectedDocument: .constant(nil)
+        )
     }
     .modelContainer(for: [PDFDocument.self, Folder.self], inMemory: true)
 }

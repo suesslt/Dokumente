@@ -2,13 +2,20 @@ import SwiftUI
 import SwiftData
 
 /// View 1: Zeigt alle Ordner an (iOS Files App Style)
-/// "Alle PDFs" ist immer zuoberst
+/// "Alle PDFs" ist immer zuoberst.
+/// Auf dem iPad wird die Auswahl über Bindings nach oben an ContentView propagiert,
+/// damit NavigationSplitView die mittlere und rechte Spalte aktualisieren kann.
 struct FolderView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Folder.sortOrder) private var allFolders: [Folder]
-    
+
     @ObservedObject var viewModel: PDFManagerViewModel
-    
+
+    /// Binding auf den aktuell gewählten Ordner (nil = "Alle PDFs", nil optional = nichts gewählt).
+    @Binding var selectedFolder: Folder??
+    /// Binding auf das aktuell geöffnete Dokument – wird beim Ordnerwechsel zurückgesetzt.
+    @Binding var selectedDocument: PDFDocument?
+
     @State private var searchText = ""
     @State private var showNewFolderAlert = false
     @State private var newFolderName = ""
@@ -88,61 +95,70 @@ struct FolderView: View {
     }
     
     // MARK: - Folder List
-    
+
     private var folderList: some View {
         List {
-            // "Alle PDFs" - immer zuoberst
-            NavigationLink {
-                PDFListView(viewModel: viewModel, folder: nil)
+            // "Alle PDFs" — immer zuoberst
+            Button {
+                selectedDocument = nil
+                selectedFolder = .some(nil)   // .some(nil) = "Alle PDFs" gewählt
             } label: {
                 HStack(spacing: 16) {
                     Image(systemName: "folder")
                         .font(.title2)
                         .foregroundStyle(.primary)
                         .frame(width: 32)
-                    
+
                     Text("Alle PDFs")
                         .font(.body)
-                    
+                        .foregroundStyle(.primary)
+
                     Spacer()
-                    
+
                     Text("\(documentCount(for: nil))")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
                 .padding(.vertical, 8)
             }
-            
+            .listRowBackground(
+                isFolderSelected(nil) ? Color.accentColor.opacity(0.15) : Color.clear
+            )
+
             // Alle Ordner
             ForEach(allFolders) { folder in
-                NavigationLink {
-                    PDFListView(viewModel: viewModel, folder: folder)
+                Button {
+                    selectedDocument = nil
+                    selectedFolder = .some(folder)
                 } label: {
                     HStack(spacing: 16) {
                         Image(systemName: "folder")
                             .font(.title2)
                             .foregroundStyle(.primary)
                             .frame(width: 32)
-                        
+
                         Text(folder.name)
                             .font(.body)
-                        
+                            .foregroundStyle(.primary)
+
                         Spacer()
-                        
+
                         Text("\(documentCount(for: folder))")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
-                        
                     }
                     .padding(.vertical, 8)
                 }
+                .listRowBackground(
+                    isFolderSelected(folder) ? Color.accentColor.opacity(0.15) : Color.clear
+                )
                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                     Button(role: .destructive) {
                         deleteFolder(folder)
                     } label: {
                         Label("Löschen", systemImage: "trash")
                     }
-                    
+
                     Button {
                         editingFolder = folder
                         editingName = folder.name
@@ -154,6 +170,16 @@ struct FolderView: View {
             }
         }
         .listStyle(.insetGrouped)
+        .buttonStyle(.plain)
+    }
+
+    /// Hilfsmethode: Ist der übergebene Ordner aktuell selektiert?
+    private func isFolderSelected(_ folder: Folder?) -> Bool {
+        guard let selectedFolder else { return false }   // nichts gewählt
+        // Beide sind nil → "Alle PDFs" verglichen mit "Alle PDFs"
+        if folder == nil && selectedFolder == nil { return true }
+        // Beide haben eine ID → Ordner vergleichen
+        return folder?.id == selectedFolder?.id
     }
     
     // MARK: - PDF Search Results
@@ -171,11 +197,14 @@ struct FolderView: View {
     private var documentList: some View {
         List {
             ForEach(filteredDocuments) { document in
-                NavigationLink {
-                    PDFDetailView(document: document, viewModel: viewModel)
+                Button {
+                    selectedDocument = document
                 } label: {
                     DocumentRow(document: document)
                 }
+                .listRowBackground(
+                    selectedDocument?.id == document.id ? Color.accentColor.opacity(0.15) : Color.clear
+                )
                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                     Button(role: .destructive) {
                         viewModel.deleteDocument(document)
@@ -186,6 +215,7 @@ struct FolderView: View {
             }
         }
         .listStyle(.insetGrouped)
+        .buttonStyle(.plain)
     }
     
     private var emptySearchState: some View {
@@ -346,7 +376,11 @@ private struct DocumentThumbnail: View {
 
 #Preview {
     NavigationStack {
-        FolderView(viewModel: PDFManagerViewModel())
+        FolderView(
+            viewModel: PDFManagerViewModel(),
+            selectedFolder: .constant(.some(nil)),
+            selectedDocument: .constant(nil)
+        )
     }
     .modelContainer(for: [PDFDocument.self, Folder.self], inMemory: true)
 }
